@@ -3,27 +3,64 @@ import os, sys, csv, argparse, time
 from competitivetracker import CompetitiveTracker
 from competitivetracker.exceptions import CompetitiveTrackerAPIException
 
-WAIT_PERIOD = 2 # Seconds to back off when rate-limiting seen
 
-def rate_limiting_in(err):
+def eprint(*args, **kwargs):
+    """
+    Print to stderr - see https://stackoverflow.com/a/14981125/8545455
+    """
+    print(*args, file=sys.stderr, **kwargs)
+
+
+def rate_limiting_in(self, err):
     if err.status == 503 or err.status == 429:
         msg = err.errors[0]
         if 'Account Over Rate Limit' in msg:
             eprint('Hit account daily limit! Please request more capacity')
             # Treat this as a fatal error for now
             return False
-
         if 'Account Over Queries Per Second Limit' in msg:
             eprint('.. pausing for per-second query rate-limiting ..')
-            time.sleep(WAIT_PERIOD)
+            time.sleep(self.retry_wait_secs)
             return True
-
     # Any other
     return False
 
+
+# Child class, with (some of) the methods of the parent class, but automatically handling rate-limiting retries
+class RetryingCompetitiveTracker(CompetitiveTracker):
+    def __init__(self, *args, **kwargs):
+        self.retry_wait_secs = 2 # Seconds to back off when rate-limiting seen
+        res = super(RetryingCompetitiveTracker, self).__init__(*args, **kwargs)
+        return res
+
+    class core:
+        class discover:
+            def search_companies(self, *args, **kwargs):
+                res = super(RetryingCompetitiveTracker, self).core.discover.search_companies(*args, **kwargs)
+                return res
+
+        class companies:
+            def get_all_company_brands(self, *args, **kwargs):
+                res = super(RetryingCompetitiveTracker, self).core.companies.get_all_company_brands(*args, **kwargs)
+                return res
+
+    class intelligence:
+        class brand:
+            def get_top_domains(self, *args, **kwargs):
+                res = super(RetryingCompetitiveTracker, self).intelligence.brand.get_top_domains(*args, **kwargs)
+                return res
+
+    class domain_info:
+        def get_brand_volume_and_esps(self, *args, **kwargs):
+            res = super(RetryingCompetitiveTracker, self).domain_info.get_brand_volume_and_esps(*args, **kwargs)
+            return res
+
+
+# -----------------------------------------------------------------------------------------
+
 def get_company_info(co):
     """
-    Get information for a company. TODO: add rate-limiting and other exception handling
+    Get information for a company.
     """
     while True:
         try:
@@ -124,13 +161,6 @@ def get_company_info(co):
     return result
 
 
-def eprint(*args, **kwargs):
-    """
-    Print to stderr - see https://stackoverflow.com/a/14981125/8545455
-    """
-    print(*args, file=sys.stderr, **kwargs)
-
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description='Simple command-line tool to fetch company brand, domain, volume and ESPs information from Competitive Tracker')
@@ -143,7 +173,7 @@ if __name__ == "__main__":
     if key == None:
         print('Please define CT_API_KEY env variable before running.')
         exit(1)
-    ct = CompetitiveTracker(key)
+    ct = RetryingCompetitiveTracker(key)
 
     # TEMP: instrument the calls
     api_sc = 0
