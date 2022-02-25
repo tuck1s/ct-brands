@@ -1,11 +1,25 @@
 #!/usr/bin/env python3
 import os, sys, csv, argparse, time
 from competitivetracker import CompetitiveTracker
+from competitivetracker.exceptions import CompetitiveTrackerAPIException
 
-WAIT_PERIOD = 30
+WAIT_PERIOD = 10
 
-def rate_limiting_in(res):
-    return (res.get('code') == 503) and (res.get('message') == 'Account Over Rate Limit')
+def rate_limiting_in(err):
+    if err.status == 503 or err.status == 429:
+        msg = err.errors[0]
+        if 'Account Over Rate limit' in msg:
+            eprint('Hit account daily limit! Please request more capacity')
+            # Treat this as a fatal error for now
+            return False
+
+        if 'Account Over Queries Per Second Limit' in msg:
+            eprint('.. pausing for per-second query rate-limiting ..')
+            time.sleep(WAIT_PERIOD)
+            return True
+
+    # Any other
+    return False
 
 def get_company_info(co):
     """
@@ -15,9 +29,8 @@ def get_company_info(co):
         try:
             company_results = ct.core.discover.search_companies(q=co)
             break
-        except ct.exceptions.CompetitiveTrackerAPIException as err:
-            if rate_limiting_in(company_results):
-                time.sleep(WAIT_PERIOD)
+        except CompetitiveTrackerAPIException as err:
+            if rate_limiting_in(err):
                 continue
             else:
                 eprint(err)
@@ -33,7 +46,17 @@ def get_company_info(co):
     if not top_company_id:
         return None
 
-    brand_results = ct.core.companies.get_all_company_brands(companyId=top_company_id)
+    while True:
+        try:
+            brand_results = ct.core.companies.get_all_company_brands(companyId=top_company_id)
+            break
+        except CompetitiveTrackerAPIException as err:
+            if rate_limiting_in(err):
+                continue
+            else:
+                eprint(err)
+                return None
+
     if len(brand_results) < 1:
         return None
 
@@ -43,13 +66,33 @@ def get_company_info(co):
         brand_id = brand.get('id')
         brand_name = brand.get('name')
         # Get all the domains for the brand, including total volume
-        domains = ct.intelligence.brand.get_top_domains(brandId=brand_id)
+        while True:
+            try:
+                domains = ct.intelligence.brand.get_top_domains(brandId=brand_id)
+                break
+            except CompetitiveTrackerAPIException as err:
+                if rate_limiting_in(err):
+                    continue
+                else:
+                    eprint(err)
+                    return None
+
         if domains:
             domain_name_vol = { d['name']: d['projectedVolume'] for d in domains }
             domain_name_list = domain_name_vol.keys()
             # Get all ESPs for the list of sending domains
             query_period = 90
-            volume_avg_and_esps = ct.domain_info.get_brand_volume_and_esps(domains=domain_name_list, timePeriod=query_period)
+            while True:
+                try:
+                    volume_avg_and_esps = ct.domain_info.get_brand_volume_and_esps(domains=domain_name_list, timePeriod=query_period)
+                    break
+                except CompetitiveTrackerAPIException as err:
+                    if rate_limiting_in(err):
+                        continue
+                    else:
+                        eprint(err)
+                        return None
+
             for d, proj_vol in domain_name_vol.items():
                 i = volume_avg_and_esps[d] # results are indexed by name
                 for j in i: # and contain a list
