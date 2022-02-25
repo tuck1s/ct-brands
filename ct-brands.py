@@ -8,7 +8,7 @@ WAIT_PERIOD = 10
 def rate_limiting_in(err):
     if err.status == 503 or err.status == 429:
         msg = err.errors[0]
-        if 'Account Over Rate limit' in msg:
+        if 'Account Over Rate Limit' in msg:
             eprint('Hit account daily limit! Please request more capacity')
             # Treat this as a fatal error for now
             return False
@@ -27,6 +27,8 @@ def get_company_info(co):
     """
     while True:
         try:
+            global api_sc
+            api_sc += 1
             company_results = ct.core.discover.search_companies(q=co)
             break
         except CompetitiveTrackerAPIException as err:
@@ -48,6 +50,8 @@ def get_company_info(co):
 
     while True:
         try:
+            global api_cb
+            api_cb += 1
             brand_results = ct.core.companies.get_all_company_brands(companyId=top_company_id)
             break
         except CompetitiveTrackerAPIException as err:
@@ -68,6 +72,8 @@ def get_company_info(co):
         # Get all the domains for the brand, including total volume
         while True:
             try:
+                global api_td
+                api_td += 1
                 domains = ct.intelligence.brand.get_top_domains(brandId=brand_id)
                 break
             except CompetitiveTrackerAPIException as err:
@@ -84,6 +90,8 @@ def get_company_info(co):
             query_period = 90
             while True:
                 try:
+                    global api_bv
+                    api_bv += 1
                     volume_avg_and_esps = ct.domain_info.get_brand_volume_and_esps(domains=domain_name_list, timePeriod=query_period)
                     break
                 except CompetitiveTrackerAPIException as err:
@@ -104,6 +112,15 @@ def get_company_info(co):
                         'domain': d,
                         'volume': proj_vol,
                         'ESPs': espString })
+        else:
+            # This is a company/brand with no sending domains. Return blank results
+            result.append( {
+                'company': top_company_name,
+                'brand': brand_name,
+                'domain': None,
+                'volume': None,
+                'ESPs': None })
+
     return result
 
 
@@ -119,7 +136,7 @@ if __name__ == "__main__":
         description='Simple command-line tool to fetch company brand, domain, volume and ESPs information from Competitive Tracker')
 
     parser.add_argument('files', metavar='file', type=argparse.FileType('r'), default=[sys.stdin], nargs="*", help='files containing a list of companies to process. If omitted, reads from stdin.')
-    parser.add_argument('-o', '--outfile', metavar='outfile.csv', type=argparse.FileType('w'), default=sys.stdout, help='output filename (CSV format), must be writeable. If omitted, prints to stdout.')
+    parser.add_argument('-o', '--outfile', metavar='outfile.csv', type=argparse.FileType('w'), default=sys.stdout, help='output filename (CSV format), must be writable. If omitted, prints to stdout.')
     args = parser.parse_args()
 
     key = os.getenv('CT_API_KEY')
@@ -127,6 +144,12 @@ if __name__ == "__main__":
         print('Please define CT_API_KEY env variable before running.')
         exit(1)
     ct = CompetitiveTracker(key)
+
+    # TEMP: instrument the calls
+    api_sc = 0
+    api_cb = 0
+    api_td = 0
+    api_bv = 0
 
     # can have more than one input file
     for infile in args.files:
@@ -145,3 +168,8 @@ if __name__ == "__main__":
                         fh.writeheader()
                         done_header = True
                     fh.writerows(result)
+                else:
+                    eprint('Error: company {} skipped - no results'.format(company))
+
+    # temp
+    print(api_sc, api_cb, api_td, api_bv)
