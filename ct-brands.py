@@ -3,7 +3,7 @@ import os, sys, csv, argparse, time
 from competitivetracker import CompetitiveTracker
 from competitivetracker.exceptions import CompetitiveTrackerAPIException
 
-WAIT_PERIOD = 10
+WAIT_PERIOD = 2 # Seconds to back off when rate-limiting seen
 
 def rate_limiting_in(err):
     if err.status == 503 or err.status == 429:
