@@ -1,4 +1,5 @@
 .vscode/*
 .DS_Store
-companies.csv
 Pipfile.lock
+*.csv
+*.xlsx

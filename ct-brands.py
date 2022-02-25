@@ -118,8 +118,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description='Simple command-line tool to fetch company brand, domain, volume and ESPs information from Competitive Tracker')
 
-    parser.add_argument('files', metavar='file', type=argparse.FileType('r'), default='-', nargs="*", help='files containing a list of companies to process. If omitted, reads from stdin.')
-    parser.add_argument('-o', '--outfile', metavar='outfile.csv', type=argparse.FileType('w'), default='-', help='output filename (CSV format), must be writeable. If omitted, prints to stdout.')
+    parser.add_argument('files', metavar='file', type=argparse.FileType('r'), default=[sys.stdin], nargs="*", help='files containing a list of companies to process. If omitted, reads from stdin.')
+    parser.add_argument('-o', '--outfile', metavar='outfile.csv', type=argparse.FileType('w'), default=sys.stdout, help='output filename (CSV format), must be writeable. If omitted, prints to stdout.')
     args = parser.parse_args()
 
     key = os.getenv('CT_API_KEY')
