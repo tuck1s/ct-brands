@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-import os, sys, csv, argparse, time
+import os, sys, csv, argparse, time, inspect
 from competitivetracker import CompetitiveTracker
 from competitivetracker.exceptions import CompetitiveTrackerAPIException
-
+from competitivetracker.base import Resource
 
 def eprint(*args, **kwargs):
     """
@@ -29,36 +29,51 @@ def rate_limiting_in(self, err):
 # Child class, with (some of) the methods of the parent class, but automatically handling rate-limiting retries
 class RetryingCompetitiveTracker(CompetitiveTracker):
     def __init__(self, *args, **kwargs):
+
+        self.call_log = {}
         self.retry_wait_secs = 2 # Seconds to back off when rate-limiting seen
-        res = super(RetryingCompetitiveTracker, self).__init__(*args, **kwargs)
-        return res
+        self.log_call(inspect.currentframe().f_code.co_name)
+        super(RetryingCompetitiveTracker, self).__init__(*args, **kwargs)
 
-    class core:
-        class discover:
-            def search_companies(self, *args, **kwargs):
-                res = super(RetryingCompetitiveTracker, self).core.discover.search_companies(*args, **kwargs)
-                return res
+    # Log the number of calls made to each function
+    def log_call(self, name):
+        if name in self.call_log:
+            self.call_log[name] += 1
+        else:
+            self.call_log[name] = 1
 
-        class companies:
+    def call_stats(self):
+        return self.call_log
+
+    class core2:
+        def __init__(self, base_uri, api_key):
+            super(RetryingCompetitiveTracker, self).__init__(base_uri, api_key)
+
+        class discover(Resource):
+            def search_companies(self, **kwargs):
+                self.log_call('core.discover.search_companies')
+                super(RetryingCompetitiveTracker, self).core.discover.search_companies(**kwargs)
+
+        class companies(Resource):
             def get_all_company_brands(self, *args, **kwargs):
-                res = super(RetryingCompetitiveTracker, self).core.companies.get_all_company_brands(*args, **kwargs)
-                return res
+                self.log_call('core.discover.get_all_company_brands')
+                super(RetryingCompetitiveTracker, self).core.companies.get_all_company_brands(*args, **kwargs)
 
-    class intelligence:
+    class Intelligence(Resource):
         class brand:
             def get_top_domains(self, *args, **kwargs):
-                res = super(RetryingCompetitiveTracker, self).intelligence.brand.get_top_domains(*args, **kwargs)
-                return res
+                self.log_call('intelligence.brand.get_top_domains')
+                super(RetryingCompetitiveTracker, self).intelligence.brand.get_top_domains(*args, **kwargs)
 
-    class domain_info:
+    class Domain_info(Resource):
         def get_brand_volume_and_esps(self, *args, **kwargs):
-            res = super(RetryingCompetitiveTracker, self).domain_info.get_brand_volume_and_esps(*args, **kwargs)
-            return res
+            self.log_call('domain_info.get_brand_volume_and_esps')
+            super(RetryingCompetitiveTracker, self).domain_info.get_brand_volume_and_esps(*args, **kwargs)
 
 
 # -----------------------------------------------------------------------------------------
 
-def get_company_info(co):
+def get_company_info(ct, co):
     """
     Get information for a company.
     """
@@ -189,7 +204,7 @@ if __name__ == "__main__":
         done_header = False
         for line in inh:
             for company in line:
-                result = get_company_info(company)
+                result = get_company_info(ct, company)
                 if result:
                     if not done_header:
                         # Write CSV file header - once only
