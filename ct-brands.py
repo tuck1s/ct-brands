@@ -27,13 +27,17 @@ def rate_limiting_in(self, err):
 
 
 # Child class, with (some of) the methods of the parent class, but automatically handling rate-limiting retries
-class RetryingCompetitiveTracker(CompetitiveTracker):
+class RetryingCompetitiveTracker():
     def __init__(self, *args, **kwargs):
 
         self.call_log = {}
         self.retry_wait_secs = 2 # Seconds to back off when rate-limiting seen
         self.log_call(inspect.currentframe().f_code.co_name)
-        super(RetryingCompetitiveTracker, self).__init__(*args, **kwargs)
+        # Create an upstream service to call
+        self.up = CompetitiveTracker(api_key=key)
+        self.core = self.Core(self.up.core) # Expose the inner classes as per https://www.geeksforgeeks.org/inner-class-in-python/
+        self.intelligence = self.Intelligence(self.up.intelligence)
+        self.domain_info = self.Domain_info(self.up.domain_info)
 
     # Log the number of calls made to each function
     def log_call(self, name):
@@ -45,30 +49,48 @@ class RetryingCompetitiveTracker(CompetitiveTracker):
     def call_stats(self):
         return self.call_log
 
-    class core2:
-        def __init__(self, base_uri, api_key):
-            super(RetryingCompetitiveTracker, self).__init__(base_uri, api_key)
+    class Core:
+        def __init__(self, up):
+            self.up = up
+            self.discover = self.Discover(self.up.discover)
+            self.companies = self.Companies(self.up.companies)
 
-        class discover(Resource):
+        class Discover:
+            def __init__(self, up):
+                self.up = up
+
             def search_companies(self, **kwargs):
-                self.log_call('core.discover.search_companies')
-                super(RetryingCompetitiveTracker, self).core.discover.search_companies(**kwargs)
+                # self.log_call(inspect.currentframe().f_code.co_name)
+                return self.up.search_companies(**kwargs)
 
-        class companies(Resource):
+        class Companies:
+            def __init__(self, up):
+                self.up = up
+
             def get_all_company_brands(self, *args, **kwargs):
-                self.log_call('core.discover.get_all_company_brands')
-                super(RetryingCompetitiveTracker, self).core.companies.get_all_company_brands(*args, **kwargs)
+                # self.log_call(inspect.currentframe().f_code.co_name)
+                return self.up.get_all_company_brands(*args, **kwargs)
 
-    class Intelligence(Resource):
-        class brand:
-            def get_top_domains(self, *args, **kwargs):
-                self.log_call('intelligence.brand.get_top_domains')
-                super(RetryingCompetitiveTracker, self).intelligence.brand.get_top_domains(*args, **kwargs)
+    class Intelligence:
+        def __init__(self, up):
+            self.up = up
+            self.brand = self.Brand(self.up.brand)
 
-    class Domain_info(Resource):
-        def get_brand_volume_and_esps(self, *args, **kwargs):
-            self.log_call('domain_info.get_brand_volume_and_esps')
-            super(RetryingCompetitiveTracker, self).domain_info.get_brand_volume_and_esps(*args, **kwargs)
+        class Brand:
+            def __init__(self, up):
+                self.up = up
+
+            def Get_top_domains(self, *args, **kwargs):
+                # self.log_call(inspect.currentframe().f_code.co_name)
+                return self.up.get_top_domains(*args, **kwargs)
+
+    class Domain_info:
+        def __init__(self, up):
+            self.up = up
+
+        def Get_brand_volume_and_esps(self, *args, **kwargs):
+            # self.log_call(inspect.currentframe().f_code.co_name)
+            return self.up.get_brand_volume_and_esps(*args, **kwargs)
 
 
 # -----------------------------------------------------------------------------------------
@@ -81,6 +103,7 @@ def get_company_info(ct, co):
         try:
             global api_sc
             api_sc += 1
+
             company_results = ct.core.discover.search_companies(q=co)
             break
         except CompetitiveTrackerAPIException as err:
@@ -104,7 +127,7 @@ def get_company_info(ct, co):
         try:
             global api_cb
             api_cb += 1
-            brand_results = ct.core.companies.get_all_company_brands(companyId=top_company_id)
+            brand_results = ct.core.companies.get_all_company_brands(ct, companyId=top_company_id)
             break
         except CompetitiveTrackerAPIException as err:
             if rate_limiting_in(err):
@@ -218,3 +241,4 @@ if __name__ == "__main__":
 
     # temp
     print(api_sc, api_cb, api_td, api_bv)
+    print(ct.call_stats())
