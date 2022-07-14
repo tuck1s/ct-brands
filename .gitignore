@@ -4,3 +4,5 @@ Pipfile.lock
 *.csv
 *.xlsx
 *.txt
+*.eml
+*.json
