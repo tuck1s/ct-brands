@@ -106,27 +106,38 @@ class CompanyDomainResult:
         return d
 
 
-def make_company_results(ct, website, company_name, company_id):
+def register_call(d, name):
+    """
+    Counts API calls by name, updating results in d (side-effect)
+    """
+    if name in d:
+        d[name] += 1
+    else:
+        d[name] = 1
+
+
+def make_company_results(ct, website, company_name, company_id, brand_results, api_calls):
     """
     Provide company results in a simplified format
     """
-    while True:
-        try:
-            global api_cb
-            api_cb += 1
-            brand_results = ct.core.companies.get_all_company_brands(companyId=company_id)
-            break
-        except CompetitiveTrackerAPIException as err:
-            if rate_limiting_in(err):
-                continue
-            else:
-                eprint(err)
-                return None
+    if brand_results == None:
+        # Make a call to get these
+        while True:
+            try:
+                register_call(api_calls, 'ct.core.companies.get_all_company_brands')
+                brand_results = ct.core.companies.get_all_company_brands(companyId=company_id)
+                break
+            except CompetitiveTrackerAPIException as err:
+                if rate_limiting_in(err):
+                    continue
+                else:
+                    eprint(err)
+                    return None
 
-    if len(brand_results) < 1:
-        return None
+        if len(brand_results) < 1:
+            return None
 
-    # Loop through all brands for the company
+    # Loop through all brands for the company. This gives us the *sending volumes*
     result = []
     for brand in brand_results:
         brand_id = brand.get('id')
@@ -134,8 +145,7 @@ def make_company_results(ct, website, company_name, company_id):
         # Get all the domains for the brand, including total volume
         while True:
             try:
-                global api_td
-                api_td += 1
+                register_call(api_calls, 'ct.intelligence.brand.get_top_domains')
                 domains = ct.intelligence.brand.get_top_domains(brandId=brand_id)
                 break
             except CompetitiveTrackerAPIException as err:
@@ -151,7 +161,7 @@ def make_company_results(ct, website, company_name, company_id):
             domain_name_vol = { d['name']: d['projectedVolume'] for d in domains }
             domain_name_list = domain_name_vol.keys()
 
-            volume_avg_and_esps = get_vol_avg_and_esps(ct, domain_name_list)
+            volume_avg_and_esps = get_vol_avg_and_esps(ct, domain_name_list, api_calls)
 
             for d, proj_vol in domain_name_vol.items():
                 i = volume_avg_and_esps[d] # results are indexed by name
@@ -164,16 +174,17 @@ def make_company_results(ct, website, company_name, company_id):
     return result
 
 
-def get_vol_avg_and_esps(ct, domain_name_list):
+def get_vol_avg_and_esps(ct, domain_name_list, api_calls):
     """
     Get all ESPs for the list of sending domains. The volume is averaged for the time period, over all the domains, so it's
     not as granular as other endpoints.
+
+    Also register the api_calls made
     """
     while True:
         try:
-            global api_bv
-            api_bv += 1
             # Get data for X months back to present day
+            register_call(api_calls, 'ct.domain_info.get_brand_volume_and_esps')
             volume_avg_and_esps = ct.domain_info.get_brand_volume_and_esps(domains=domain_name_list, timePeriod=3, precision='months')
             break
         except CompetitiveTrackerAPIException as err:
@@ -185,12 +196,13 @@ def get_vol_avg_and_esps(ct, domain_name_list):
     return volume_avg_and_esps
 
 
-def get_domain_info(ct, company_site):
+def get_domain_info(ct, company_site, api_calls):
     """
     Get information for an organizational domain.
     """
     while True:
         try:
+            register_call(api_calls, 'ct.core.graph.get_company_from_domain')
             company_results = ct.core.graph.get_company_from_domain(domainName=org_domain(company_site))
             break
         except CompetitiveTrackerAPIException as err:
@@ -203,16 +215,17 @@ def get_domain_info(ct, company_site):
     company_name = company_results['name']
     company_id = company_results['id']
 
-
+    brands = company_results['brands']
     # TODO: could walk Child Companies and/or Parent Companies too - skip for now
     # company_results.get('childCompanies')
     # company_results.get('parentCompany')
 
-    return make_company_results(ct, company_site, company_name, company_id)
+    res = make_company_results(ct, company_site, company_name, company_id, brands, api_calls)
+    return res
 
 
 def write_result(result, verbose):
-    global fh # need this to persist between calls
+    global fh # need this to persist between calls .. could make this a Class
     """
     Write out results in CSV, in verbose or non-verbose format
     """
@@ -271,12 +284,7 @@ if __name__ == "__main__":
         exit(1)
     ct = CompetitiveTracker(key)
 
-    # TEMP: instrument the calls
-    api_sc = 0
-    api_cb = 0
-    api_td = 0
-    api_bv = 0
-
+    api_call_counts = []
     # can have more than one input file
     for infile in args.files:
         if infile.isatty():
@@ -288,7 +296,12 @@ if __name__ == "__main__":
             for company_site in line:
                 # map URL-like names into organizational domains
                 if is_url_like(company_site):
-                    result = get_domain_info(ct, company_site)
+                    api_calls = {
+                        'company_site': company_site
+                    }
+                    # collect api_calls results as a side-effect of the processing (pass by reference)
+                    result = get_domain_info(ct, company_site, api_calls)
+                    api_call_counts.append(api_calls)
                     if result:
                         write_result(result, args.verbose)
                     else:
@@ -297,5 +310,9 @@ if __name__ == "__main__":
                     eprint('! {} is not a valid URL'.format(company_site))
                     # TODO you can fall back and use name lookups with result = get_company_info(ct, company_site)
 
-    # temp
-    print(api_sc, api_cb, api_td, api_bv)
+    debug = True
+    if debug:
+        with open('api_call_counts.csv', 'w') as api_file:
+            api_writer = csv.DictWriter(api_file, api_call_counts[0])
+            api_writer.writeheader()
+            api_writer.writerows(api_call_counts)
