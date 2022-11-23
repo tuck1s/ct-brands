@@ -94,13 +94,32 @@ def get_company_info_from_sending_domain(ct:CompetitiveTracker, sending_domain:s
             if rate_limiting_in(err):
                 continue
 
-            # check if we should quietly return no results
+            # check the type of error
             if err.errors:
                 response = json.loads(err.errors[0])
                 if(response.get('code') == 404 and response.get('type') == 'MISSING'):
-                    return None
-       
-            eprint(err)
+                    # gather information on the domain, even if the company is unknown
+                    while True:
+                        try:
+                            dom = ct.domain_info.get_domain_info(domain = sending_domain)
+                            register_call(api_calls, 'ct.competitive.domain_info')
+                            break
+                        except CompetitiveTrackerAPIException as err:
+                            if rate_limiting_in(err):
+                             continue
+                    
+                    # found the domain - concatenate any further info
+                    brands = []
+                    result = []
+                    for d in dom:
+                        # report the sending-domain as Company name, we don't have a true company name
+                        res = CompanyDomainResult('!Unknown website', '!Unknown company: sending domain = {}'.format(d.get('domain')), d.get('brands'))
+                        res.domain = d.get('domain')
+                        res.ESPs = [ n['name'] for n in d['esps'] ]
+                        result.append(res)
+                    return result
+                else:
+                    eprint(err)
             return None
 
     res = make_company_results(ct, sending_domain, co.get('name'), co.get('id'), co.get('brands'), api_calls)
@@ -310,7 +329,12 @@ class ResultWriter:
                         del grouped_r.domain
                         grouped_r.domain_count = 1 # count them
             # output the final group
-            if grouped_r and self.fh:
+            if grouped_r:
+                if self.fh == None:
+                    # Write CSV file header - once only - with full details
+                    self.fh = csv.DictWriter(args.outfile, fieldnames=grouped_r.to_dict().keys(), restval='', extrasaction='ignore')
+                    self.fh.writeheader()
+
                 self.fh.writerow(grouped_r.to_dict())
 
 
