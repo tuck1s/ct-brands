@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-import os, sys, csv, argparse, time
+import os, sys, csv, argparse, time, json
 from competitivetracker import CompetitiveTracker
 from competitivetracker.exceptions import CompetitiveTrackerAPIException
 from urllib.parse import urlparse
 from copy import deepcopy
+from typing import List
 
 def eprint(*args, **kwargs):
     """
@@ -12,7 +13,10 @@ def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
 
-def rate_limiting_in(err):
+def rate_limiting_in(err:CompetitiveTrackerAPIException):
+    """
+    Return whether a particular error value indicates rate-limiting
+    """
     retry_wait_secs = 2 # Seconds to back off when rate-limiting seen
     if err.status == 503 or err.status == 429:
         msg = err.errors[0]
@@ -28,7 +32,7 @@ def rate_limiting_in(err):
     return False
 
 
-def org_domain(url):
+def org_domain(url:str):
     """
     Allow the http:// or https:// to be present or absent
     """
@@ -47,26 +51,21 @@ def org_domain(url):
     return domain.removeprefix('www.')
 
 
-def is_url_like(url):
+def is_url_like(url:str):
     """
     Recognize URLs if they start with http:// https://, or start with wwww.
     """
     return urlparse(url).netloc != '' or url.startswith('www.')
 
 
-# -----------------------------------------------------------------------------------------
-
-'''
-def get_company_info(ct, co):
+def get_company_info_from_website(ct:CompetitiveTracker, company_site:str, api_calls:dict):
     """
-    Get information for a company, from a human-readable name
+    Get information for an organizational domain.
     """
     while True:
         try:
-            global api_sc
-            api_sc += 1
-
-            company_results = ct.core.discover.search_companies(q=co)
+            co = ct.core.graph.get_company_from_domain(domainName=org_domain(company_site))
+            register_call(api_calls, 'ct.core.graph.domain')
             break
         except CompetitiveTrackerAPIException as err:
             if rate_limiting_in(err):
@@ -75,23 +74,106 @@ def get_company_info(ct, co):
                 eprint(err)
                 return None
 
-    companies = company_results.get('companies')
+    res = make_company_results(ct, company_site, co.get('name'), co.get('id'), co.get('brands'), api_calls)
+    # recursively walk any child companies
+    for child_co in co.get('childCompanies'):
+        res += company_info(ct, child_co.get('id'), api_calls)
+    return res
+
+
+def get_company_info_from_sending_domain(ct:CompetitiveTracker, sending_domain:str, api_calls:dict):
+    """
+    Get information from a sending domain, working back to the Company
+    """
+    while True:
+        try:
+            co = ct.core.graph.get_company_from_domain(domainName=sending_domain)
+            register_call(api_calls, 'ct.core.graph.domain')
+            break
+        except CompetitiveTrackerAPIException as err:
+            if rate_limiting_in(err):
+                continue
+
+            # check if we should quietly return no results
+            if err.errors:
+                response = json.loads(err.errors[0])
+                if(response.get('code') == 404 and response.get('type') == 'MISSING'):
+                    return None
+       
+            eprint(err)
+            return None
+
+    res = make_company_results(ct, sending_domain, co.get('name'), co.get('id'), co.get('brands'), api_calls)
+    # recursively walk any child companies
+    for child_co in co.get('childCompanies'):
+        res += company_info(ct, child_co.get('id'), api_calls)
+    return res
+
+
+def get_company_info_from_name(ct:CompetitiveTracker, co:str, api_calls:dict):
+    """
+    Get information for a company, from a human-readable name
+    """
+    while True:
+        try:
+            co = ct.core.discover.search_companies(q=co)
+            register_call(api_calls, 'ct.core.discover.company')
+
+            break
+        except CompetitiveTrackerAPIException as err:
+            if rate_limiting_in(err):
+                continue
+            else:
+                eprint(err)
+                return None
+
+    companies = co.get('companies')
     if len(companies) < 1:
         return None
 
     # Choose the first entry as the top company match
     top_company_id = companies[0].get('id')
-    top_company_name = companies[0].get('name')
-    if not top_company_id:
+    return company_info(ct, top_company_id, api_calls)
+
+
+def company_info(ct:CompetitiveTracker, id:int, api_calls:dict):
+    """
+    Return a list of details for this company (from id)
+    """
+    while True:
+        try:
+            co = ct.core.graph.get_company_from_id(id)
+            register_call(api_calls, 'ct.core.graph.company')
+
+            break
+        except CompetitiveTrackerAPIException as err:
+            if rate_limiting_in(err):
+                continue
+            else:
+                eprint(err)
+                return None
+    if not co:
         return None
 
-    x = make_company_results('name match', top_company_name, top_company_id)
-    return x
-'''
+    res = make_company_results(ct, co.get('url'), co.get('name'), id, co.get('brands'), api_calls)
+    # recursively walk any child companies
+    for child_co in co.get('childCompanies'):
+        res += company_info(ct, child_co.get('id'), api_calls)
+    return res
+
+
+def register_call(d:dict, name:str):
+    """
+    Counts API calls by name, updating results in d (side-effect)
+    """
+    if name in d:
+        d[name] += 1
+    else:
+        d[name] = 1
+
 
 class CompanyDomainResult:
-
-    def __init__(self, website, company_name,brand_name):
+    def __init__(self, website:str, company_name:str, brand_name:str):
         self.website = website
         self.company_name = company_name
         self.brand_name = brand_name
@@ -106,17 +188,7 @@ class CompanyDomainResult:
         return d
 
 
-def register_call(d, name):
-    """
-    Counts API calls by name, updating results in d (side-effect)
-    """
-    if name in d:
-        d[name] += 1
-    else:
-        d[name] = 1
-
-
-def make_company_results(ct, website, company_name, company_id, brand_results, api_calls):
+def make_company_results(ct:CompetitiveTracker, website:str, company_name:str, company_id:int, brand_results:list, api_calls:dict):
     """
     Provide company results in a simplified format
     """
@@ -124,8 +196,8 @@ def make_company_results(ct, website, company_name, company_id, brand_results, a
         # Make a call to get these
         while True:
             try:
-                register_call(api_calls, 'ct.core.companies.get_all_company_brands')
                 brand_results = ct.core.companies.get_all_company_brands(companyId=company_id)
+                register_call(api_calls, 'ct.core.companies.get_all_company_brands')
                 break
             except CompetitiveTrackerAPIException as err:
                 if rate_limiting_in(err):
@@ -145,8 +217,8 @@ def make_company_results(ct, website, company_name, company_id, brand_results, a
         # Get all the domains for the brand, including total volume
         while True:
             try:
-                register_call(api_calls, 'ct.intelligence.brand.get_top_domains')
                 domains = ct.intelligence.brand.get_top_domains(brandId=brand_id)
+                register_call(api_calls, 'ct.intelligence.brand.get_top_domains')
                 break
             except CompetitiveTrackerAPIException as err:
                 if rate_limiting_in(err):
@@ -155,7 +227,7 @@ def make_company_results(ct, website, company_name, company_id, brand_results, a
                     eprint(err)
                     return None
 
-        res = CompanyDomainResult(website, company_name,brand_name)
+        res = CompanyDomainResult(website, company_name, brand_name)
 
         if domains:
             domain_name_vol = { d['name']: d['projectedVolume'] for d in domains }
@@ -174,7 +246,7 @@ def make_company_results(ct, website, company_name, company_id, brand_results, a
     return result
 
 
-def get_vol_avg_and_esps(ct, domain_name_list, api_calls):
+def get_vol_avg_and_esps(ct:CompetitiveTracker, domain_name_list:list, api_calls:dict):
     """
     Get all ESPs for the list of sending domains. The volume is averaged for the time period, over all the domains, so it's
     not as granular as other endpoints.
@@ -196,73 +268,50 @@ def get_vol_avg_and_esps(ct, domain_name_list, api_calls):
     return volume_avg_and_esps
 
 
-def get_domain_info(ct, company_site, api_calls):
-    """
-    Get information for an organizational domain.
-    """
-    while True:
-        try:
-            register_call(api_calls, 'ct.core.graph.get_company_from_domain')
-            company_results = ct.core.graph.get_company_from_domain(domainName=org_domain(company_site))
-            break
-        except CompetitiveTrackerAPIException as err:
-            if rate_limiting_in(err):
-                continue
-            else:
-                eprint(err)
-                return None
+class ResultWriter:
+    def __init__(self, verbose:bool):
+        self.fh = None
+        self.verbose = verbose
 
-    company_name = company_results['name']
-    company_id = company_results['id']
-
-    brands = company_results['brands']
-    # TODO: could walk Child Companies and/or Parent Companies too - skip for now
-    # company_results.get('childCompanies')
-    # company_results.get('parentCompany')
-
-    res = make_company_results(ct, company_site, company_name, company_id, brands, api_calls)
-    return res
-
-
-def write_result(result, verbose):
-    global fh # need this to persist between calls .. could make this a Class
-    """
-    Write out results in CSV, in verbose or non-verbose format
-    """
-    if verbose:
-        if fh == None:
-            # Write CSV file header - once only - with full details
-            fh = csv.DictWriter(args.outfile, fieldnames=result[0].to_dict().keys(), restval='', extrasaction='ignore')
-            fh.writeheader()
-        for r in result:
-            fh.writerow(r.to_dict())
-    else:
-        # Collect all domain results together, if they have the same set of ESPs in use
-        grouped_r = None
-        for r in result:
-            if grouped_r == None:
-                grouped_r = deepcopy(r)
-                del grouped_r.domain
-                grouped_r.domain_count = 1 # count them
-            else:
-                if r.website == grouped_r.website and r.company_name == grouped_r.company_name \
-                and r.brand_name == grouped_r.brand_name and r.ESPs == grouped_r.ESPs:
-
-                    grouped_r.volume += r.volume
-                    grouped_r.domain_count += 1
-                else:
-                    # Found something new - output what we have so far
-                    if fh == None:
-                        # Write CSV file header - once only - with full details
-                        fh = csv.DictWriter(args.outfile, fieldnames=grouped_r.to_dict().keys(), restval='', extrasaction='ignore')
-                        fh.writeheader()
-
-                    fh.writerow(grouped_r.to_dict())
+    def write(self, result: List[CompanyDomainResult]):
+        """
+        Write out results in CSV, in verbose or non-verbose format
+        """
+        if self.verbose:
+            if self.fh == None:
+                # Write CSV file header - once only - with full details
+                self.fh = csv.DictWriter(args.outfile, fieldnames=result[0].to_dict().keys(), restval='', extrasaction='ignore')
+                self.fh.writeheader()
+            for r in result:
+                self.fh.writerow(r.to_dict())
+        else:
+            # Collect all domain results together, if they have the same set of ESPs in use
+            grouped_r = None
+            for r in result:
+                if grouped_r == None:
                     grouped_r = deepcopy(r)
                     del grouped_r.domain
                     grouped_r.domain_count = 1 # count them
-        # output the final group
-        fh.writerow(grouped_r.to_dict())
+                else:
+                    if r.website == grouped_r.website and r.company_name == grouped_r.company_name \
+                    and r.brand_name == grouped_r.brand_name and r.ESPs == grouped_r.ESPs:
+
+                        grouped_r.volume += r.volume
+                        grouped_r.domain_count += 1
+                    else:
+                        # Found something new - output what we have so far
+                        if self.fh == None:
+                            # Write CSV file header - once only - with full details
+                            self.fh = csv.DictWriter(args.outfile, fieldnames=grouped_r.to_dict().keys(), restval='', extrasaction='ignore')
+                            self.fh.writeheader()
+
+                        self.fh.writerow(grouped_r.to_dict())
+                        grouped_r = deepcopy(r)
+                        del grouped_r.domain
+                        grouped_r.domain_count = 1 # count them
+            # output the final group
+            if grouped_r and self.fh:
+                self.fh.writerow(grouped_r.to_dict())
 
 
 # -----------------------------------------------------------------------------------------
@@ -270,12 +319,15 @@ def write_result(result, verbose):
 # -----------------------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    input_types = ['company_name', 'website', 'sending_domain']
     parser = argparse.ArgumentParser(
         description='Simple command-line tool to fetch company brand, domain, volume and ESPs information from Competitive Tracker')
 
-    parser.add_argument('files', metavar='file', type=argparse.FileType('r'), default=[sys.stdin], nargs="*", help='files containing a list of company names or website(s) to process. If omitted, reads from stdin.')
+    parser.add_argument('files', metavar='file', type=argparse.FileType('r'), nargs='+', help='files containing a list of company names or website(s) to process.')
     parser.add_argument('-o', '--outfile', metavar='outfile.csv', type=argparse.FileType('w'), default=sys.stdout, help='output filename (CSV format), must be writable. If omitted, prints to stdout.')
     parser.add_argument('-v', '--verbose', action='store_true', help='Show each sending domain as a separate result')
+    parser.add_argument('--input_type', choices=input_types, default='company_name', help='Type of input file')
+    parser.add_argument('--api_outfile', metavar='api_outfile', type=argparse.FileType('w'), nargs='?', help='output API call counts in a file')
     args = parser.parse_args()
 
     key = os.getenv('CT_API_KEY')
@@ -290,29 +342,30 @@ if __name__ == "__main__":
         if infile.isatty():
             eprint('Awaiting input from {}'.format(infile.name)) # show the user we're waiting for input, without touching the stdout stream
         inh = csv.reader(infile)
-        fh = None # Note this is used inside write_result
+        fh = ResultWriter(args.verbose)
         eprint('Writing to {}'.format(args.outfile.name))
         for line in inh:
             for company_site in line:
-                # map URL-like names into organizational domains
-                if is_url_like(company_site):
-                    api_calls = {
-                        'company_site': company_site
-                    }
-                    # collect api_calls results as a side-effect of the processing (pass by reference)
-                    result = get_domain_info(ct, company_site, api_calls)
-                    api_call_counts.append(api_calls)
-                    if result:
-                        write_result(result, args.verbose)
-                    else:
-                        eprint('! company {} skipped - no results'.format(company_site))
+                # collect api_calls results as a side-effect of the processing (pass by reference)
+                # start by tagging the input data
+                api_calls = { '_company_site': company_site }
+                if args.input_type == input_types[0]:
+                    result = get_company_info_from_name(ct, company_site, api_calls)
+                elif args.input_type == input_types[1]:
+                    result = get_company_info_from_website(ct, company_site, api_calls)
+                elif args.input_type == input_types[2]:
+                    result = get_company_info_from_sending_domain(ct, company_site, api_calls)
                 else:
-                    eprint('! {} is not a valid URL'.format(company_site))
-                    # TODO you can fall back and use name lookups with result = get_company_info(ct, company_site)
-
-    debug = True
-    if debug:
-        with open('api_call_counts.csv', 'w') as api_file:
-            api_writer = csv.DictWriter(api_file, api_call_counts[0])
-            api_writer.writeheader()
-            api_writer.writerows(api_call_counts)
+                    eprint('Unrecognised input type', input_types)
+                    os.exit(1)
+                api_call_counts.append(api_calls)
+                if result:
+                    fh.write(result)
+                else:
+                    eprint('! entry {} skipped - no results'.format(company_site))
+    
+    if args.api_outfile:
+        u = set().union(*api_call_counts)
+        api_writer = csv.DictWriter(args.api_outfile, sorted(u))
+        api_writer.writeheader()
+        api_writer.writerows(api_call_counts)
